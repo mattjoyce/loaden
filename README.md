@@ -5,10 +5,13 @@ A reusable Python configuration loading module with YAML include support, deep m
 ## Features
 
 - **YAML configuration loading** with clear error messages
-- **Include support** - compose configs from multiple files
+- **Include support** - compose configs from multiple files via `loaden_include`
 - **Deep merging** - nested dictionaries merge recursively
-- **Environment variable injection** - set env vars from config
+- **Environment variable substitution** - expand `${VAR}` and `${VAR:-default}` in values
+- **Env file loading** - load `.env` or YAML env files via `loaden_env`
+- **Environment variable injection** - set env vars from config's `env` section
 - **Required key validation** - fail fast on missing config
+- **Safe nested access** - `get(config, "db.host", default)` helper
 - **Circular include detection** - prevents infinite loops
 
 ## Installation
@@ -136,15 +139,67 @@ database:
 
 ### Environment Variables
 
-Set environment variables from config. Shell environment takes precedence:
+Loaden provides three ways to work with environment variables:
+
+#### 1. Variable Substitution in Values
+
+Use `${VAR}` or `${VAR:-default}` syntax in any string value:
+
+```yaml
+database:
+  host: ${DB_HOST:-localhost}
+  password: ${DB_PASSWORD}
+  url: postgres://${DB_HOST:-localhost}:5432/myapp
+```
+
+```python
+import os
+os.environ["DB_HOST"] = "prod.example.com"
+
+config = load_config("config.yaml")
+print(config["database"]["host"])  # "prod.example.com"
+print(config["database"]["url"])   # "postgres://prod.example.com:5432/myapp"
+```
+
+If a variable is not set and has no default, it remains as `${VAR}` in the output.
+
+#### 2. Load Env Files with `loaden_env`
+
+Load environment variables from `.env` or YAML files:
+
+```yaml
+loaden_env: .env
+# or multiple files:
+loaden_env:
+  - .env
+  - secrets.env
+
+database:
+  password: ${DB_PASSWORD}
+```
+
+**.env file format:**
+```
+# Comments are ignored
+DB_HOST=localhost
+DB_PASSWORD="secret123"
+API_KEY='my-api-key'
+```
+
+**YAML env file format (secrets.yaml):**
+```yaml
+DB_PASSWORD: secret123
+API_KEY: my-api-key
+```
+
+#### 3. Set Env Vars with `env` Section
+
+Set environment variables from config (useful for child processes):
 
 ```yaml
 env:
   DATABASE_URL: postgres://localhost/myapp
   API_TIMEOUT: 30
-
-database:
-  url: ${DATABASE_URL}
 ```
 
 ```python
@@ -155,7 +210,7 @@ config = load_config("config.yaml")
 print(os.environ["DATABASE_URL"])  # "postgres://localhost/myapp"
 ```
 
-If `DATABASE_URL` is already set in your shell, the config value is ignored.
+Shell environment always takes precedence - existing vars are not overwritten.
 
 ### Required Keys Validation
 
@@ -173,6 +228,23 @@ config = load_config(
 Raises `ValueError` with clear message if any key is missing:
 ```
 ValueError: Invalid config: missing required keys in config.yaml: api.key
+```
+
+### Safe Nested Access
+
+Use `get()` to safely access nested keys without try/except:
+
+```python
+from loaden import load_config, get
+
+config = load_config("config.yaml")
+
+# Safe access with default
+host = get(config, "database.host", "localhost")
+timeout = get(config, "api.timeout", 30)
+
+# Returns None if not found (no default specified)
+optional = get(config, "maybe.missing")
 ```
 
 ### Deep Merge
@@ -240,13 +312,14 @@ When using includes, values are merged with this precedence (highest wins):
 
 ## API Reference
 
-### `load_config(config_path, required_keys=None)`
+### `load_config(config_path, required_keys=None, expand_vars=True)`
 
 Load configuration from a YAML file.
 
 **Parameters:**
 - `config_path` (str): Path to the YAML config file
 - `required_keys` (list[str] | None): Dot-separated keys that must exist (e.g., `["db.host", "api.key"]`)
+- `expand_vars` (bool): Whether to expand `${VAR}` in values (default: True)
 
 **Returns:** `dict[str, Any]` - The configuration dictionary
 
@@ -254,6 +327,17 @@ Load configuration from a YAML file.
 - `FileNotFoundError`: Config file doesn't exist
 - `yaml.YAMLError`: Invalid YAML syntax
 - `ValueError`: Config is not a dict, circular include, or missing required keys
+
+### `get(config, key_path, default=None)`
+
+Safely get a nested key using dot notation.
+
+**Parameters:**
+- `config` (dict): Configuration dictionary
+- `key_path` (str): Dot-separated path (e.g., `"database.host"`)
+- `default` (Any): Value to return if key not found (default: None)
+
+**Returns:** Value at key path, or default if not found
 
 ### `deep_merge(base, overlay)`
 

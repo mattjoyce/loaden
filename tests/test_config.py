@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from loaden.config import deep_merge, load_config
+from loaden.config import deep_merge, get, load_config
 
 
 class TestDeepMerge:
@@ -476,3 +476,307 @@ level1:
 
         config = load_config(str(main), required_keys=["api_key"])
         assert config["api_key"] == "from_base"
+
+
+class TestGet:
+    """Tests for get() helper function."""
+
+    def test_simple_key(self) -> None:
+        """Get a top-level key."""
+        config = {"host": "localhost", "port": 5432}
+        assert get(config, "host") == "localhost"
+        assert get(config, "port") == 5432
+
+    def test_nested_key(self) -> None:
+        """Get a nested key using dot notation."""
+        config = {"database": {"host": "localhost", "port": 5432}}
+        assert get(config, "database.host") == "localhost"
+        assert get(config, "database.port") == 5432
+
+    def test_deeply_nested_key(self) -> None:
+        """Get a deeply nested key."""
+        config = {"level1": {"level2": {"level3": {"value": "deep"}}}}
+        assert get(config, "level1.level2.level3.value") == "deep"
+
+    def test_missing_key_returns_none(self) -> None:
+        """Return None for missing key when no default specified."""
+        config = {"host": "localhost"}
+        assert get(config, "missing") is None
+        assert get(config, "database.host") is None
+
+    def test_missing_key_returns_default(self) -> None:
+        """Return default value for missing key."""
+        config = {"host": "localhost"}
+        assert get(config, "missing", "default") == "default"
+        assert get(config, "database.host", "fallback") == "fallback"
+
+    def test_default_none_explicit(self) -> None:
+        """Explicit None default works."""
+        config = {"host": "localhost"}
+        assert get(config, "missing", None) is None
+
+    def test_path_through_non_dict(self) -> None:
+        """Return default when path goes through non-dict."""
+        config = {"database": "not_a_dict"}
+        assert get(config, "database.host") is None
+        assert get(config, "database.host", "default") == "default"
+
+    def test_empty_config(self) -> None:
+        """Handle empty config."""
+        config: dict = {}
+        assert get(config, "any.key") is None
+        assert get(config, "any.key", "default") == "default"
+
+    def test_returns_nested_dict(self) -> None:
+        """Can return a nested dict value."""
+        config = {"database": {"host": "localhost", "port": 5432}}
+        result = get(config, "database")
+        assert result == {"host": "localhost", "port": 5432}
+
+    def test_returns_list_value(self) -> None:
+        """Can return a list value."""
+        config = {"items": [1, 2, 3]}
+        assert get(config, "items") == [1, 2, 3]
+
+
+class TestEnvVarSubstitution:
+    """Tests for ${VAR} substitution in values."""
+
+    def test_simple_substitution(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Substitute ${VAR} with env var value."""
+        monkeypatch.setenv("TEST_HOST", "prod.example.com")
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("host: ${TEST_HOST}\n", encoding="utf-8")
+
+        config = load_config(str(config_file))
+        assert config["host"] == "prod.example.com"
+
+    def test_substitution_with_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Use default when var not set."""
+        monkeypatch.delenv("UNSET_VAR", raising=False)
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("host: ${UNSET_VAR:-localhost}\n", encoding="utf-8")
+
+        config = load_config(str(config_file))
+        assert config["host"] == "localhost"
+
+    def test_substitution_ignores_default_when_var_set(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ignore default when var is set."""
+        monkeypatch.setenv("SET_VAR", "actual_value")
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("value: ${SET_VAR:-default}\n", encoding="utf-8")
+
+        config = load_config(str(config_file))
+        assert config["value"] == "actual_value"
+
+    def test_unset_var_no_default_preserved(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Keep ${VAR} when unset and no default."""
+        monkeypatch.delenv("TOTALLY_UNSET", raising=False)
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("value: ${TOTALLY_UNSET}\n", encoding="utf-8")
+
+        config = load_config(str(config_file))
+        assert config["value"] == "${TOTALLY_UNSET}"
+
+    def test_multiple_substitutions_in_string(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Multiple vars in one string."""
+        monkeypatch.setenv("DB_HOST", "localhost")
+        monkeypatch.setenv("DB_PORT", "5432")
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("url: postgres://${DB_HOST}:${DB_PORT}/mydb\n", encoding="utf-8")
+
+        config = load_config(str(config_file))
+        assert config["url"] == "postgres://localhost:5432/mydb"
+
+    def test_substitution_in_nested_values(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Substitution works in nested structures."""
+        monkeypatch.setenv("NESTED_VAR", "nested_value")
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            """
+database:
+  connection:
+    host: ${NESTED_VAR}
+""",
+            encoding="utf-8",
+        )
+
+        config = load_config(str(config_file))
+        assert config["database"]["connection"]["host"] == "nested_value"
+
+    def test_substitution_in_list(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Substitution works in list items."""
+        monkeypatch.setenv("ITEM_VAR", "item_value")
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("items:\n  - ${ITEM_VAR}\n  - static\n", encoding="utf-8")
+
+        config = load_config(str(config_file))
+        assert config["items"] == ["item_value", "static"]
+
+    def test_expand_vars_false(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Disable substitution with expand_vars=False."""
+        monkeypatch.setenv("SHOULD_NOT_EXPAND", "expanded")
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("value: ${SHOULD_NOT_EXPAND}\n", encoding="utf-8")
+
+        config = load_config(str(config_file), expand_vars=False)
+        assert config["value"] == "${SHOULD_NOT_EXPAND}"
+
+    def test_empty_default(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Empty string default."""
+        monkeypatch.delenv("EMPTY_DEFAULT_VAR", raising=False)
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("value: ${EMPTY_DEFAULT_VAR:-}\n", encoding="utf-8")
+
+        config = load_config(str(config_file))
+        assert config["value"] == ""
+
+
+class TestLoadEnv:
+    """Tests for loaden_env directive."""
+
+    def test_load_dotenv_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Load vars from .env file."""
+        monkeypatch.delenv("DOTENV_VAR", raising=False)
+
+        env_file = tmp_path / ".env"
+        env_file.write_text("DOTENV_VAR=from_dotenv\n", encoding="utf-8")
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("loaden_env: .env\nvalue: ${DOTENV_VAR}\n", encoding="utf-8")
+
+        config = load_config(str(config_file))
+        assert config["value"] == "from_dotenv"
+        assert os.environ.get("DOTENV_VAR") == "from_dotenv"
+
+    def test_load_yaml_env_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Load vars from YAML env file."""
+        monkeypatch.delenv("YAML_ENV_VAR", raising=False)
+
+        env_file = tmp_path / "secrets.yaml"
+        env_file.write_text("YAML_ENV_VAR: from_yaml\n", encoding="utf-8")
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "loaden_env: secrets.yaml\nvalue: ${YAML_ENV_VAR}\n", encoding="utf-8"
+        )
+
+        config = load_config(str(config_file))
+        assert config["value"] == "from_yaml"
+
+    def test_load_multiple_env_files(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Load multiple env files in order."""
+        monkeypatch.delenv("MULTI_VAR1", raising=False)
+        monkeypatch.delenv("MULTI_VAR2", raising=False)
+
+        env1 = tmp_path / "first.env"
+        env1.write_text("MULTI_VAR1=first\n", encoding="utf-8")
+
+        env2 = tmp_path / "second.env"
+        env2.write_text("MULTI_VAR2=second\n", encoding="utf-8")
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            """
+loaden_env:
+  - first.env
+  - second.env
+var1: ${MULTI_VAR1}
+var2: ${MULTI_VAR2}
+""",
+            encoding="utf-8",
+        )
+
+        config = load_config(str(config_file))
+        assert config["var1"] == "first"
+        assert config["var2"] == "second"
+
+    def test_shell_env_takes_precedence(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Shell env vars are not overwritten by env files."""
+        monkeypatch.setenv("PRECEDENCE_VAR", "from_shell")
+
+        env_file = tmp_path / ".env"
+        env_file.write_text("PRECEDENCE_VAR=from_file\n", encoding="utf-8")
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("loaden_env: .env\nvalue: ${PRECEDENCE_VAR}\n", encoding="utf-8")
+
+        config = load_config(str(config_file))
+        assert config["value"] == "from_shell"
+
+    def test_dotenv_comments_ignored(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Comments in .env files are ignored."""
+        monkeypatch.delenv("COMMENT_TEST", raising=False)
+
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "# This is a comment\nCOMMENT_TEST=value\n# Another comment\n",
+            encoding="utf-8",
+        )
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("loaden_env: .env\nvalue: ${COMMENT_TEST}\n", encoding="utf-8")
+
+        config = load_config(str(config_file))
+        assert config["value"] == "value"
+
+    def test_dotenv_quoted_values(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Quoted values in .env have quotes stripped."""
+        monkeypatch.delenv("QUOTED_DOUBLE", raising=False)
+        monkeypatch.delenv("QUOTED_SINGLE", raising=False)
+
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "QUOTED_DOUBLE=\"double quoted\"\nQUOTED_SINGLE='single quoted'\n",
+            encoding="utf-8",
+        )
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "loaden_env: .env\ndouble: ${QUOTED_DOUBLE}\nsingle: ${QUOTED_SINGLE}\n",
+            encoding="utf-8",
+        )
+
+        config = load_config(str(config_file))
+        assert config["double"] == "double quoted"
+        assert config["single"] == "single quoted"
+
+    def test_loaden_env_removed_from_result(self, tmp_path: Path) -> None:
+        """The loaden_env key is not present in final config."""
+        env_file = tmp_path / ".env"
+        env_file.write_text("SOME_VAR=value\n", encoding="utf-8")
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("loaden_env: .env\nkey: value\n", encoding="utf-8")
+
+        config = load_config(str(config_file))
+        assert "loaden_env" not in config
+
+    def test_env_file_not_found(self, tmp_path: Path) -> None:
+        """Raise error when env file doesn't exist."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("loaden_env: nonexistent.env\n", encoding="utf-8")
+
+        with pytest.raises(FileNotFoundError, match="Env file not found"):
+            load_config(str(config_file))
