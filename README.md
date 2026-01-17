@@ -1,32 +1,38 @@
 # Loaden
 
-A reusable Python configuration loading module with YAML include support, deep merging, and validation.
+YAML config loader with file includes, `${VAR}` substitution, `.env` support, and deep merging.
+
+```yaml
+# config.yaml
+loaden_include: base.yaml       # compose from multiple files
+loaden_env: .env                # load environment files
+
+database:
+  host: ${DB_HOST:-localhost}   # env var with default
+  password: ${DB_PASSWORD}      # from .env file
+```
+
+```python
+from loaden import load_config, get
+
+config = load_config("config.yaml")
+host = get(config, "database.host", "127.0.0.1")  # safe nested access
+```
 
 ## Features
 
-- **YAML configuration loading** with clear error messages
-- **Include support** - compose configs from multiple files via `loaden_include`
-- **Deep merging** - nested dictionaries merge recursively
-- **Environment variable substitution** - expand `${VAR}` and `${VAR:-default}` in values
-- **Env file loading** - load `.env` or YAML env files via `loaden_env`
-- **Environment variable injection** - set env vars from config's `env` section
-- **Required key validation** - fail fast on missing config
+- **File includes** - compose configs via `loaden_include: [base.yaml, local.yaml]`
+- **Deep merging** - nested dicts merge recursively, later values win
+- **`${VAR}` substitution** - expand env vars with optional defaults `${VAR:-default}`
+- **`.env` file loading** - load env files via `loaden_env: .env`
 - **Safe nested access** - `get(config, "db.host", default)` helper
-- **Circular include detection** - prevents infinite loops
+- **Required key validation** - fail fast on missing config
+- **CLI tool** - validate, show, combine, and extract configs
 
 ## Installation
 
 ```bash
-pip install -e .
-```
-
-Or add to your project's dependencies:
-
-```toml
-[project]
-dependencies = [
-    "loaden @ git+https://github.com/youruser/loaden.git",
-]
+pip install loaden
 ```
 
 ## Quick Start
