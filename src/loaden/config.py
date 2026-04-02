@@ -152,10 +152,28 @@ def _load_env_file(env_path: Path) -> None:
             os.environ[key] = value
 
 
+def _normalize_loader_path(path_value: str | Path, base_dir: Path | None = None) -> Path:
+    """
+    Expand user/env vars and normalize a loader-managed path.
+
+    Args:
+        path_value: Raw path value from API or config
+        base_dir: Base directory for relative paths
+
+    Returns:
+        Normalized absolute path
+    """
+    path = Path(os.path.expandvars(str(path_value))).expanduser()
+    if not path.is_absolute() and base_dir is not None:
+        path = base_dir / path
+    return path.resolve(strict=False)
+
+
 def load_config(
     config_path: str = "config.yaml",
     required_keys: list[str] | None = None,
     expand_vars: bool = True,
+    expand_loader_paths: bool = False,
     _include_stack: list[str] | None = None,
 ) -> dict[str, Any]:
     """
@@ -182,6 +200,8 @@ def load_config(
         config_path: Path to config file
         required_keys: List of dot-separated keys that must exist (e.g., ["db.host", "api.key"])
         expand_vars: Whether to expand ${VAR} in values (default: True)
+        expand_loader_paths: Whether to expand ~ and environment variables in
+            config_path, loaden_include, and loaden_env paths (default: False)
         _include_stack: Internal parameter to detect circular includes
 
     Returns:
@@ -192,10 +212,14 @@ def load_config(
         yaml.YAMLError: If config file is invalid YAML
         ValueError: If config is empty/invalid, circular include detected, or required keys missing
     """
-    path = Path(config_path)
+    path = (
+        _normalize_loader_path(config_path)
+        if expand_loader_paths
+        else Path(config_path)
+    )
     if not path.exists():
         raise FileNotFoundError(
-            f"Config file not found: {config_path}\n"
+            f"Config file not found: {path}\n"
             f"Please create a config.yaml file or specify path with --config"
         )
 
@@ -228,11 +252,16 @@ def load_config(
 
             base_config: dict[str, Any] = {}
             for include_path in includes:
-                include_full = path.parent / include_path
+                include_full = (
+                    _normalize_loader_path(include_path, base_dir=path.parent)
+                    if expand_loader_paths
+                    else path.parent / include_path
+                )
                 included = load_config(
                     str(include_full),
                     required_keys=None,
                     expand_vars=False,  # Expand only at root level
+                    expand_loader_paths=expand_loader_paths,
                     _include_stack=_include_stack.copy(),
                 )
                 base_config = deep_merge(base_config, included)
@@ -246,7 +275,11 @@ def load_config(
                 env_files = [env_files]
 
             for env_file in env_files:
-                env_path = path.parent / env_file
+                env_path = (
+                    _normalize_loader_path(env_file, base_dir=path.parent)
+                    if expand_loader_paths
+                    else path.parent / env_file
+                )
                 _load_env_file(env_path)
 
     finally:

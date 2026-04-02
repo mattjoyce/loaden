@@ -19,7 +19,11 @@ def cmd_validate(args: argparse.Namespace) -> int:
     required_keys = args.required.split(",") if args.required else None
 
     try:
-        config = load_config(args.config, required_keys=required_keys)
+        config = load_config(
+            args.config,
+            required_keys=required_keys,
+            expand_loader_paths=args.expand_loader_paths,
+        )
         if args.verbose:
             print(f"Valid: {args.config}")
             print(f"  Keys: {len(config)}")
@@ -34,7 +38,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
 def cmd_show(args: argparse.Namespace) -> int:
     """Show resolved config (with includes merged)."""
     try:
-        config = load_config(args.config)
+        config = load_config(args.config, expand_loader_paths=args.expand_loader_paths)
 
         if args.key:
             value = _get_nested_key(config, args.key)
@@ -58,7 +62,10 @@ def cmd_combine(args: argparse.Namespace) -> int:
     try:
         result: dict[str, Any] = {}
         for config_path in args.configs:
-            config = load_config(config_path)
+            config = load_config(
+                config_path,
+                expand_loader_paths=args.expand_loader_paths,
+            )
             result = deep_merge(result, config)
 
         output = yaml.dump(result, default_flow_style=False, sort_keys=False)
@@ -77,7 +84,7 @@ def cmd_combine(args: argparse.Namespace) -> int:
 def cmd_extract(args: argparse.Namespace) -> int:
     """Extract a section from config to a new file."""
     try:
-        config = load_config(args.config)
+        config = load_config(args.config, expand_loader_paths=args.expand_loader_paths)
         value = _get_nested_key(config, args.key)
 
         if value is None:
@@ -121,6 +128,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    def add_loader_path_flag(command_parser: argparse.ArgumentParser) -> None:
+        command_parser.add_argument(
+            "--expand-loader-paths",
+            action="store_true",
+            help="Expand ~ and environment variables in config, include, and env-file paths",
+        )
+
     # validate
     p_validate = subparsers.add_parser("validate", help="Validate a config file")
     p_validate.add_argument("config", help="Path to config file")
@@ -128,18 +142,21 @@ def main(argv: list[str] | None = None) -> int:
         "-r", "--required", help="Comma-separated required keys (e.g., db.host,api.key)"
     )
     p_validate.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
+    add_loader_path_flag(p_validate)
     p_validate.set_defaults(func=cmd_validate)
 
     # show
     p_show = subparsers.add_parser("show", help="Show resolved config (includes merged)")
     p_show.add_argument("config", help="Path to config file")
     p_show.add_argument("-k", "--key", help="Show only this key (dot notation)")
+    add_loader_path_flag(p_show)
     p_show.set_defaults(func=cmd_show)
 
     # combine
     p_combine = subparsers.add_parser("combine", help="Combine multiple config files")
     p_combine.add_argument("configs", nargs="+", help="Config files to combine (in order)")
     p_combine.add_argument("-o", "--output", help="Output file (default: stdout)")
+    add_loader_path_flag(p_combine)
     p_combine.set_defaults(func=cmd_combine)
 
     # extract
@@ -147,6 +164,7 @@ def main(argv: list[str] | None = None) -> int:
     p_extract.add_argument("config", help="Path to config file")
     p_extract.add_argument("key", help="Key to extract (dot notation)")
     p_extract.add_argument("-o", "--output", help="Output file (default: stdout)")
+    add_loader_path_flag(p_extract)
     p_extract.set_defaults(func=cmd_extract)
 
     args = parser.parse_args(argv)

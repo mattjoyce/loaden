@@ -25,6 +25,7 @@ host = get(config, "database.host", "127.0.0.1")  # safe nested access
 - **Deep merging** - nested dicts merge recursively, later values win
 - **`${VAR}` substitution** - expand env vars with optional defaults `${VAR:-default}`
 - **`.env` file loading** - load env files via `loaden_env: .env`
+- **Loader path expansion** - optionally expand `~` and env vars in config, include, and env-file paths
 - **Safe nested access** - `get(config, "db.host", default)` helper
 - **Required key validation** - fail fast on missing config
 - **CLI tool** - validate, show, combine, and extract configs
@@ -198,6 +199,42 @@ DB_PASSWORD: secret123
 API_KEY: my-api-key
 ```
 
+### Loader Path Expansion
+
+Enable loader path expansion when you want `loaden` to expand `~` and
+environment variables in paths it manages itself:
+
+- `config_path`
+- `loaden_include`
+- `loaden_env`
+
+Relative include and env-file paths remain relative to the config file that
+declares them. Ordinary config values are not treated as paths.
+
+```yaml
+# config.yaml
+loaden_include:
+  - ~/shared/loaden/base.yaml
+  - ${LOADEN_CONFIG_DIR}/local.yaml
+
+loaden_env: ${LOADEN_SECRETS_DIR}/app.env
+
+app:
+  name: demo
+```
+
+```python
+from loaden import load_config
+
+config = load_config("config.yaml", expand_loader_paths=True)
+```
+
+The CLI exposes the same behavior with `--expand-loader-paths`:
+
+```bash
+loaden show --expand-loader-paths config.yaml
+```
+
 #### 3. Set Env Vars with `env` Section
 
 Set environment variables from config (useful for child processes):
@@ -318,7 +355,7 @@ When using includes, values are merged with this precedence (highest wins):
 
 ## API Reference
 
-### `load_config(config_path, required_keys=None, expand_vars=True)`
+### `load_config(config_path, required_keys=None, expand_vars=True, expand_loader_paths=False)`
 
 Load configuration from a YAML file.
 
@@ -326,6 +363,7 @@ Load configuration from a YAML file.
 - `config_path` (str): Path to the YAML config file
 - `required_keys` (list[str] | None): Dot-separated keys that must exist (e.g., `["db.host", "api.key"]`)
 - `expand_vars` (bool): Whether to expand `${VAR}` in values (default: True)
+- `expand_loader_paths` (bool): Whether to expand `~` and environment variables in `config_path`, `loaden_include`, and `loaden_env` paths (default: False)
 
 **Returns:** `dict[str, Any]` - The configuration dictionary
 

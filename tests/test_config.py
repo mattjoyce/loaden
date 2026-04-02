@@ -289,6 +289,65 @@ class TestLoadConfigIncludes:
         config = load_config(str(main))
         assert "loaden_include" not in config
 
+    def test_expand_loader_paths_supports_tilde_include(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Tilde paths in includes are expanded when enabled."""
+        home_dir = tmp_path / "home"
+        home_dir.mkdir()
+        monkeypatch.setenv("HOME", str(home_dir))
+
+        base = home_dir / "base.yaml"
+        base.write_text("base: value\n", encoding="utf-8")
+
+        main = tmp_path / "config.yaml"
+        main.write_text("loaden_include: ~/base.yaml\nmain: value\n", encoding="utf-8")
+
+        config = load_config(str(main), expand_loader_paths=True)
+        assert config == {"base": "value", "main": "value"}
+
+    def test_expand_loader_paths_supports_env_var_include(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Environment variables in include paths are expanded when enabled."""
+        shared_dir = tmp_path / "shared"
+        shared_dir.mkdir()
+        monkeypatch.setenv("LOADEN_INCLUDE_DIR", str(shared_dir))
+
+        base = shared_dir / "base.yaml"
+        base.write_text("base: value\n", encoding="utf-8")
+
+        main = tmp_path / "config.yaml"
+        main.write_text(
+            "loaden_include: ${LOADEN_INCLUDE_DIR}/base.yaml\nmain: value\n",
+            encoding="utf-8",
+        )
+
+        config = load_config(str(main), expand_loader_paths=True)
+        assert config == {"base": "value", "main": "value"}
+
+    def test_expand_loader_paths_preserves_relative_include_behavior(self, tmp_path: Path) -> None:
+        """Relative includes stay relative to the including file when enabled."""
+        child_dir = tmp_path / "child"
+        child_dir.mkdir()
+
+        base = tmp_path / "base.yaml"
+        base.write_text("base: value\n", encoding="utf-8")
+
+        main = child_dir / "config.yaml"
+        main.write_text("loaden_include: ../base.yaml\nmain: value\n", encoding="utf-8")
+
+        config = load_config(str(main), expand_loader_paths=True)
+        assert config == {"base": "value", "main": "value"}
+
+    def test_expand_loader_paths_disabled_for_include_by_default(self, tmp_path: Path) -> None:
+        """Loader path expansion is opt-in for include paths."""
+        main = tmp_path / "config.yaml"
+        main.write_text("loaden_include: ~/base.yaml\nmain: value\n", encoding="utf-8")
+
+        with pytest.raises(FileNotFoundError, match="base.yaml"):
+            load_config(str(main))
+
 
 class TestLoadConfigEnv:
     """Tests for environment variable handling."""
@@ -780,3 +839,95 @@ var2: ${MULTI_VAR2}
 
         with pytest.raises(FileNotFoundError, match="Env file not found"):
             load_config(str(config_file))
+
+    def test_expand_loader_paths_supports_tilde_env_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Tilde paths in loaden_env are expanded when enabled."""
+        home_dir = tmp_path / "home"
+        home_dir.mkdir()
+        monkeypatch.delenv("DOTENV_VAR", raising=False)
+        monkeypatch.setenv("HOME", str(home_dir))
+
+        env_file = home_dir / ".env"
+        env_file.write_text("DOTENV_VAR=from_tilde\n", encoding="utf-8")
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("loaden_env: ~/.env\nvalue: ${DOTENV_VAR}\n", encoding="utf-8")
+
+        config = load_config(str(config_file), expand_loader_paths=True)
+        assert config["value"] == "from_tilde"
+
+    def test_expand_loader_paths_supports_env_var_env_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Environment variables in loaden_env paths are expanded when enabled."""
+        env_dir = tmp_path / "envdir"
+        env_dir.mkdir()
+        monkeypatch.delenv("DOTENV_VAR", raising=False)
+        monkeypatch.setenv("LOADEN_ENV_DIR", str(env_dir))
+
+        env_file = env_dir / "app.env"
+        env_file.write_text("DOTENV_VAR=from_env_var\n", encoding="utf-8")
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "loaden_env: ${LOADEN_ENV_DIR}/app.env\nvalue: ${DOTENV_VAR}\n",
+            encoding="utf-8",
+        )
+
+        config = load_config(str(config_file), expand_loader_paths=True)
+        assert config["value"] == "from_env_var"
+
+    def test_expand_loader_paths_preserves_relative_env_file_behavior(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Relative env file paths stay relative to the config file when enabled."""
+        child_dir = tmp_path / "child"
+        child_dir.mkdir()
+        monkeypatch.delenv("DOTENV_VAR", raising=False)
+
+        env_file = tmp_path / ".env"
+        env_file.write_text("DOTENV_VAR=relative_env\n", encoding="utf-8")
+
+        config_file = child_dir / "config.yaml"
+        config_file.write_text("loaden_env: ../.env\nvalue: ${DOTENV_VAR}\n", encoding="utf-8")
+
+        config = load_config(str(config_file), expand_loader_paths=True)
+        assert config["value"] == "relative_env"
+
+
+class TestLoadConfigPathHandling:
+    """Tests for config_path expansion behavior."""
+
+    def test_expand_loader_paths_supports_tilde_config_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Tilde config paths are expanded when enabled."""
+        home_dir = tmp_path / "home"
+        config_dir = home_dir / "configs"
+        config_dir.mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(home_dir))
+
+        config_file = config_dir / "config.yaml"
+        config_file.write_text("key: value\n", encoding="utf-8")
+
+        config = load_config("~/configs/config.yaml", expand_loader_paths=True)
+        assert config == {"key": "value"}
+
+    def test_expand_loader_paths_supports_env_var_config_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Environment variables in config_path are expanded when enabled."""
+        config_dir = tmp_path / "configs"
+        config_dir.mkdir()
+        monkeypatch.setenv("LOADEN_CONFIG_DIR", str(config_dir))
+
+        config_file = config_dir / "config.yaml"
+        config_file.write_text("key: value\n", encoding="utf-8")
+
+        config = load_config(
+            "${LOADEN_CONFIG_DIR}/config.yaml",
+            expand_loader_paths=True,
+        )
+        assert config == {"key": "value"}
