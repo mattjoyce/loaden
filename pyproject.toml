@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "loaden"
-version = "0.1.0"
+version = "0.1.1"
 description = "YAML config loader with file includes, ${VAR} substitution, .env support, and deep merging"
 readme = "README.md"
 license = {text = "GPL-3.0-or-later"}

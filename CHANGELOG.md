@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.1 - 2026-04-03
 
 - Added optional loader path expansion for `config_path`, `loaden_include`, and
   `loaden_env`.
