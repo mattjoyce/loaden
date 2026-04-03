@@ -1,5 +1,8 @@
 # Changelog
 
+## 2026-04-03
+- Version bumped to 0.1.1.
+
 ## 0.1.1 - 2026-04-03
 
 - Added optional loader path expansion for `config_path`, `loaden_include`, and
