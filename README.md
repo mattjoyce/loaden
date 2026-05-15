@@ -170,6 +170,17 @@ print(config["database"]["url"])   # "postgres://prod.example.com:5432/myapp"
 
 If a variable is not set and has no default, it remains as `${VAR}` in the output.
 
+**Substituted values are always strings.** Substitution runs on the parsed
+config tree, not on the raw YAML text, so `port: ${PORT:-5432}` yields the
+string `"5432"`, not the integer `5432`. Cast at the call site if you need a
+non-string type.
+
+**`${VAR:-default}` diverges from shell on empty values.** A variable set to
+the empty string (`VAR=""`) is treated as *set*, so the default is not
+applied — the substitution returns `""`. Shell's `${VAR:-default}` falls back
+to the default for empty values too; loaden does not. If you need the
+shell-style behaviour, post-process the resolved value (`value or default`).
+
 #### 2. Load Env Files with `loaden_env`
 
 Load environment variables from `.env` or YAML files:
@@ -254,6 +265,22 @@ print(os.environ["DATABASE_URL"])  # "postgres://localhost/myapp"
 ```
 
 Shell environment always takes precedence - existing vars are not overwritten.
+
+### Side Effects
+
+`load_config` is not a pure function. It writes to `os.environ` in two cases:
+
+1. A `loaden_env:` directive pointing at one or more env files — each variable
+   the file defines is set in the process environment (existing values win).
+2. A top-level `env:` section in the resolved config — each key/value pair is
+   set in the process environment (existing values win).
+
+`os.environ` is not thread-safe for writes. Concurrent calls to `load_config`
+that touch either mechanism can race. If you load configuration from multiple
+threads, serialise the calls or restrict the env-mutating mechanisms to a
+single-threaded startup phase.
+
+`${VAR}` substitution itself does not mutate `os.environ` — it only reads.
 
 ### Required Keys Validation
 

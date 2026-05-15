@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -111,21 +112,28 @@ def _load_env_file(env_path: Path) -> None:
 
     Shell environment takes precedence - existing vars are not overwritten.
 
+    Malformed .env lines (missing '=' or empty key after strip) are skipped
+    with a warnings.warn rather than raising, to preserve historical behavior.
+
     Args:
         env_path: Path to env file
 
     Raises:
         FileNotFoundError: If file doesn't exist
-        ValueError: If file format is invalid
+        ValueError: If a .yaml/.yml env file's top-level is not a dict
+        yaml.YAMLError: If a .yaml/.yml env file has parse errors (the message
+            is tagged with the env file path)
     """
     if not env_path.exists():
         raise FileNotFoundError(f"Env file not found: {env_path}")
 
     content = env_path.read_text(encoding="utf-8")
 
-    # Try YAML first (if it looks like YAML)
     if env_path.suffix in (".yaml", ".yml"):
-        env_vars = yaml.safe_load(content)
+        try:
+            env_vars = yaml.safe_load(content)
+        except yaml.YAMLError as e:
+            raise yaml.YAMLError(f"Invalid YAML in env file {env_path}: {e}") from e
         if env_vars is None:
             return
         if not isinstance(env_vars, dict):
@@ -136,19 +144,29 @@ def _load_env_file(env_path: Path) -> None:
         return
 
     # Parse as .env format
-    for line in content.splitlines():
-        line = line.strip()
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
         if "=" not in line:
+            warnings.warn(
+                f"Skipping malformed line in {env_path} (no '='): {line!r}",
+                stacklevel=2,
+            )
             continue
         key, _, value = line.partition("=")
         key = key.strip()
         value = value.strip()
+        if not key:
+            warnings.warn(
+                f"Skipping malformed line in {env_path} (empty key): {line!r}",
+                stacklevel=2,
+            )
+            continue
         # Remove surrounding quotes if present
         if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
             value = value[1:-1]
-        if key and key not in os.environ:
+        if key not in os.environ:
             os.environ[key] = value
 
 
@@ -167,6 +185,89 @@ def _normalize_loader_path(path_value: str | Path, base_dir: Path | None = None)
     if not path.is_absolute() and base_dir is not None:
         path = base_dir / path
     return path.resolve(strict=False)
+
+
+def _resolve_loader_path(
+    value: str | Path,
+    base_dir: Path | None,
+    expand: bool,
+) -> Path:
+    """Resolve a loader-managed path either via expansion or simple base-dir join."""
+    if expand:
+        return _normalize_loader_path(value, base_dir=base_dir)
+    p = Path(value)
+    return base_dir / p if base_dir is not None else p
+
+
+def _load_with_includes(
+    path: Path,
+    expand_loader_paths: bool,
+    include_stack: list[str],
+) -> dict[str, Any]:
+    """
+    Read one YAML file, recursively merge its loaden_include chain, and apply
+    any loaden_env files. Returns the merged tree without env-section
+    processing, ${VAR} expansion, or required-key validation — those run
+    once in load_config regardless of include depth.
+
+    include_stack is treated as immutable here: each recursion passes a fresh
+    list, so there is no try/finally bookkeeping.
+
+    Args:
+        path: Existing path to a YAML config file
+        expand_loader_paths: Expand ~ and ${VAR} in loaden_include / loaden_env
+        include_stack: Resolved paths of ancestors in the current load chain
+
+    Returns:
+        Merged config dict (loaden_include and loaden_env keys removed)
+
+    Raises:
+        FileNotFoundError: If an included file is missing
+        ValueError: On circular include or non-dict YAML
+        yaml.YAMLError: On invalid YAML
+    """
+    resolved_path = str(path.resolve())
+    if resolved_path in include_stack:
+        cycle = " -> ".join(include_stack + [resolved_path])
+        raise ValueError(f"Circular include detected: {cycle}")
+    next_stack = include_stack + [resolved_path]
+
+    with open(path, encoding="utf-8") as f:
+        config = yaml.safe_load(f)
+
+    if config is None:
+        config = {}
+    if not isinstance(config, dict):
+        raise ValueError(
+            f"Invalid config file: {path}\n"
+            f"Config must be a YAML dictionary, got {type(config).__name__}"
+        )
+
+    if "loaden_include" in config:
+        includes = config.pop("loaden_include")
+        if isinstance(includes, str):
+            includes = [includes]
+
+        base_config: dict[str, Any] = {}
+        for include_path in includes:
+            include_full = _resolve_loader_path(include_path, path.parent, expand_loader_paths)
+            if not include_full.exists():
+                raise FileNotFoundError(f"Config file not found: {include_full}")
+            included = _load_with_includes(include_full, expand_loader_paths, next_stack)
+            base_config = deep_merge(base_config, included)
+
+        config = deep_merge(base_config, config)
+
+    if "loaden_env" in config:
+        env_files = config.pop("loaden_env")
+        if isinstance(env_files, str):
+            env_files = [env_files]
+
+        for env_file in env_files:
+            env_path = _resolve_loader_path(env_file, path.parent, expand_loader_paths)
+            _load_env_file(env_path)
+
+    return config
 
 
 def load_config(
@@ -191,10 +292,17 @@ def load_config(
     takes precedence over config values.
 
     Environment variable substitution expands ${VAR} and ${VAR:-default} in
-    string values throughout the config.
+    string values throughout the config. Substituted values are always strings:
+    ``port: ${PORT:-5432}`` yields the string ``"5432"``, not an int. Cast at
+    the call site if you need a non-string type.
 
     Included files are merged in order, with later files overriding earlier ones.
     The main config file always takes final precedence.
+
+    Side effects: ``load_config`` writes to ``os.environ`` when the config
+    contains a top-level ``env:`` section or a ``loaden_env:`` directive
+    pointing at an env file. ``os.environ`` is not thread-safe for writes —
+    concurrent calls to ``load_config`` can race.
 
     Args:
         config_path: Path to config file
@@ -202,7 +310,8 @@ def load_config(
         expand_vars: Whether to expand ${VAR} in values (default: True)
         expand_loader_paths: Whether to expand ~ and environment variables in
             config_path, loaden_include, and loaden_env paths (default: False)
-        _include_stack: Internal parameter to detect circular includes
+        _include_stack: Internal parameter — seeds the include-cycle stack.
+            Kept for backward compatibility; new code should not pass this.
 
     Returns:
         Configuration dictionary
@@ -212,97 +321,31 @@ def load_config(
         yaml.YAMLError: If config file is invalid YAML
         ValueError: If config is empty/invalid, circular include detected, or required keys missing
     """
-    path = (
-        _normalize_loader_path(config_path)
-        if expand_loader_paths
-        else Path(config_path)
-    )
+    path = _resolve_loader_path(config_path, None, expand_loader_paths)
     if not path.exists():
-        raise FileNotFoundError(
-            f"Config file not found: {path}\n"
-            f"Please create a config.yaml file or specify path with --config"
-        )
+        raise FileNotFoundError(f"Config file not found: {path}")
 
-    if _include_stack is None:
-        _include_stack = []
+    config = _load_with_includes(
+        path,
+        expand_loader_paths,
+        list(_include_stack) if _include_stack else [],
+    )
 
-    resolved_path = str(path.resolve())
-    if resolved_path in _include_stack:
-        cycle = " -> ".join(_include_stack + [resolved_path])
-        raise ValueError(f"Circular include detected: {cycle}")
+    if "env" in config:
+        for key, value in config["env"].items():
+            if key not in os.environ:
+                os.environ[key] = str(value)
 
-    _include_stack.append(resolved_path)
+    if expand_vars:
+        config = _expand_env_vars(config)
 
-    try:
-        with open(path, encoding="utf-8") as f:
-            config = yaml.safe_load(f)
-
-        if config is None:
-            config = {}
-        if not isinstance(config, dict):
-            raise ValueError(
-                f"Invalid config file: {config_path}\n"
-                f"Config must be a YAML dictionary, got {type(config).__name__}"
-            )
-
-        if "loaden_include" in config:
-            includes = config.pop("loaden_include")
-            if isinstance(includes, str):
-                includes = [includes]
-
-            base_config: dict[str, Any] = {}
-            for include_path in includes:
-                include_full = (
-                    _normalize_loader_path(include_path, base_dir=path.parent)
-                    if expand_loader_paths
-                    else path.parent / include_path
-                )
-                included = load_config(
-                    str(include_full),
-                    required_keys=None,
-                    expand_vars=False,  # Expand only at root level
-                    expand_loader_paths=expand_loader_paths,
-                    _include_stack=_include_stack.copy(),
-                )
-                base_config = deep_merge(base_config, included)
-
-            config = deep_merge(base_config, config)
-
-        # Process loaden_env - load env files before expanding vars
-        if "loaden_env" in config:
-            env_files = config.pop("loaden_env")
-            if isinstance(env_files, str):
-                env_files = [env_files]
-
-            for env_file in env_files:
-                env_path = (
-                    _normalize_loader_path(env_file, base_dir=path.parent)
-                    if expand_loader_paths
-                    else path.parent / env_file
-                )
-                _load_env_file(env_path)
-
-    finally:
-        if resolved_path in _include_stack:
-            _include_stack.remove(resolved_path)
-
-    is_root_call = len(_include_stack) == 0
-
-    if is_root_call:
-        # Set env vars from config's env section
-        if "env" in config:
-            for key, value in config["env"].items():
-                if key not in os.environ:
-                    os.environ[key] = str(value)
-
-        # Expand ${VAR} in all string values
-        if expand_vars:
-            config = _expand_env_vars(config)
-
-        if required_keys:
-            _validate_required_keys(config, required_keys, config_path)
+    if required_keys:
+        _validate_required_keys(config, required_keys, config_path)
 
     return config
+
+
+_MISSING = object()
 
 
 def _validate_required_keys(
@@ -313,6 +356,9 @@ def _validate_required_keys(
     """
     Validate that all required keys exist in config.
 
+    A key whose value is ``None`` counts as present — only structurally missing
+    keys (or a non-dict ancestor) are reported.
+
     Args:
         config: Configuration dictionary
         required_keys: List of dot-separated keys (e.g., ["db.host", "api.key"])
@@ -321,16 +367,7 @@ def _validate_required_keys(
     Raises:
         ValueError: If any required key is missing
     """
-    missing = []
-    for key_path in required_keys:
-        parts = key_path.split(".")
-        current = config
-        for part in parts:
-            if not isinstance(current, dict) or part not in current:
-                missing.append(key_path)
-                break
-            current = current[part]
-
+    missing = [k for k in required_keys if get(config, k, _MISSING) is _MISSING]
     if missing:
         raise ValueError(
             f"Invalid config: missing required keys in {config_path}: {', '.join(missing)}"

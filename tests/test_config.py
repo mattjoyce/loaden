@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 import pytest
+import yaml
 
 from loaden.config import deep_merge, get, load_config
 
@@ -931,3 +932,79 @@ class TestLoadConfigPathHandling:
             expand_loader_paths=True,
         )
         assert config == {"key": "value"}
+
+
+class TestMalformedEnvFile:
+    """Regression tests for 0.1.2 .env / env-file error handling."""
+
+    def test_line_without_equals_warns_and_skips(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A line missing '=' warns but does not abort loading."""
+        monkeypatch.delenv("GOOD_VAR", raising=False)
+
+        env_file = tmp_path / ".env"
+        env_file.write_text("GOOD_VAR=ok\nMALFORMED_NO_EQUALS\n", encoding="utf-8")
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("loaden_env: .env\nvalue: ${GOOD_VAR}\n", encoding="utf-8")
+
+        with pytest.warns(UserWarning, match="no '='"):
+            config = load_config(str(config_file))
+
+        assert config["value"] == "ok"
+        assert os.environ.get("GOOD_VAR") == "ok"
+
+    def test_line_with_empty_key_warns_and_skips(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A line whose key is empty after strip warns but does not abort."""
+        monkeypatch.delenv("GOOD_VAR", raising=False)
+
+        env_file = tmp_path / ".env"
+        env_file.write_text("GOOD_VAR=ok\n=orphan_value\n", encoding="utf-8")
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("loaden_env: .env\nvalue: ${GOOD_VAR}\n", encoding="utf-8")
+
+        with pytest.warns(UserWarning, match="empty key"):
+            config = load_config(str(config_file))
+
+        assert config["value"] == "ok"
+
+    def test_invalid_yaml_env_file_raises_tagged_error(self, tmp_path: Path) -> None:
+        """A broken .yaml env file raises yaml.YAMLError naming the file."""
+        env_file = tmp_path / "secrets.yaml"
+        env_file.write_text("key: : invalid\n", encoding="utf-8")
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("loaden_env: secrets.yaml\n", encoding="utf-8")
+
+        with pytest.raises(yaml.YAMLError, match="Invalid YAML in env file"):
+            load_config(str(config_file))
+
+
+class TestSubstitutionContract:
+    """Documented 0.1.2 contracts: substitution type + null required keys."""
+
+    def test_numeric_substitution_yields_string(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """${VAR:-5432} resolves to the string '5432', never an int."""
+        monkeypatch.delenv("DB_PORT", raising=False)
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("port: ${DB_PORT:-5432}\n", encoding="utf-8")
+
+        config = load_config(str(config_file))
+        assert config["port"] == "5432"
+        assert isinstance(config["port"], str)
+
+    def test_required_key_with_null_value_counts_as_present(self, tmp_path: Path) -> None:
+        """A required key whose YAML value is null is present, not missing."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("database:\n  host:\n", encoding="utf-8")
+
+        # Must not raise: host exists, its value is just None.
+        config = load_config(str(config_file), required_keys=["database.host"])
+        assert config["database"]["host"] is None

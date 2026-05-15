@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "loaden"
-version = "0.1.1"
+version = "0.1.2"
 description = "YAML config loader with file includes, ${VAR} substitution, .env support, and deep merging"
 readme = "README.md"
 license = {text = "GPL-3.0-or-later"}
@@ -55,3 +55,9 @@ select = ["E", "F", "I", "UP", "B", "C4", "SIM"]
 python_version = "3.10"
 warn_return_any = true
 warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Stray warnings are failures: a warning loaden does not explicitly assert
+# (via pytest.warns) means an unintended behavior change slipped in.
+filterwarnings = ["error"]

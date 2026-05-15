@@ -9,9 +9,20 @@ from typing import Any
 
 import yaml
 
-from loaden.config import deep_merge, load_config
+from loaden.config import deep_merge, get, load_config
 
 __all__ = ["main"]
+
+
+def _print_error(e: Exception) -> None:
+    """Print an error to stderr, appending a CLI hint for missing-file cases."""
+    print(f"Error: {e}", file=sys.stderr)
+    if isinstance(e, FileNotFoundError):
+        print(
+            "Hint: pass the config file path as the command argument, "
+            "e.g. `loaden show path/to/config.yaml`",
+            file=sys.stderr,
+        )
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
@@ -31,7 +42,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
                 print(f"  Required keys present: {', '.join(required_keys)}")
         return 0
     except (FileNotFoundError, ValueError, yaml.YAMLError) as e:
-        print(f"Error: {e}", file=sys.stderr)
+        _print_error(e)
         return 1
 
 
@@ -41,7 +52,7 @@ def cmd_show(args: argparse.Namespace) -> int:
         config = load_config(args.config, expand_loader_paths=args.expand_loader_paths)
 
         if args.key:
-            value = _get_nested_key(config, args.key)
+            value = get(config, args.key)
             if value is None:
                 print(f"Key not found: {args.key}", file=sys.stderr)
                 return 1
@@ -53,7 +64,7 @@ def cmd_show(args: argparse.Namespace) -> int:
             print(yaml.dump(config, default_flow_style=False, sort_keys=False))
         return 0
     except (FileNotFoundError, ValueError, yaml.YAMLError) as e:
-        print(f"Error: {e}", file=sys.stderr)
+        _print_error(e)
         return 1
 
 
@@ -77,7 +88,7 @@ def cmd_combine(args: argparse.Namespace) -> int:
             print(output)
         return 0
     except (FileNotFoundError, ValueError, yaml.YAMLError) as e:
-        print(f"Error: {e}", file=sys.stderr)
+        _print_error(e)
         return 1
 
 
@@ -85,7 +96,7 @@ def cmd_extract(args: argparse.Namespace) -> int:
     """Extract a section from config to a new file."""
     try:
         config = load_config(args.config, expand_loader_paths=args.expand_loader_paths)
-        value = _get_nested_key(config, args.key)
+        value = get(config, args.key)
 
         if value is None:
             print(f"Key not found: {args.key}", file=sys.stderr)
@@ -105,19 +116,8 @@ def cmd_extract(args: argparse.Namespace) -> int:
             print(output)
         return 0
     except (FileNotFoundError, ValueError, yaml.YAMLError) as e:
-        print(f"Error: {e}", file=sys.stderr)
+        _print_error(e)
         return 1
-
-
-def _get_nested_key(config: dict[str, Any], key_path: str) -> Any | None:
-    """Get a nested key using dot notation."""
-    parts = key_path.split(".")
-    current: Any = config
-    for part in parts:
-        if not isinstance(current, dict) or part not in current:
-            return None
-        current = current[part]
-    return current
 
 
 def main(argv: list[str] | None = None) -> int:
